@@ -2,6 +2,10 @@
 
 Minik-Ajan, LLM (Büyük Dil Modelleri) ajan kullanımını eğlenerek öğrenmek için yapılmış küçük ve şirin bir örnektir. Hesaplıdır, tutumludur. Bakkaldan sakız alır gibi cent’ler ve kuruşlarla çalışır. MCP vb. protokollerle uğraşmadan, LangChain veya LangGraph gibi araçları öğrenmenin ön yükü olmadan, işlerinizi ve denemelerinizi hızlıca izole edilmiş Docker konteynerlarında test etmeniz için tasarlanmıştır.
 
+[![Watch the demo](https://img.youtube.com/vi/nB36YzwMk_8/0.jpg)](https://youtu.be/nB36YzwMk_8)
+
+--- 
+
 Dosya ve dizinleri izole etmek için basit bir kod ve Docker kullanılmıştır; ideal olan Firecracker’dır ancak kapsam dışıdır. Bash komutlarının çalıştırılması prompt ile engellenmiştir. Ancak her yaramaz ajan gibi `use_tools.py` dosyasını okuyarak araç tanımlarını ve limitlerini görüp yine de kullanmaya çalışabilir. Buna rağmen atak yüzeyi oldukça düşüktür ve tamamen engellemeniz için gerekli kod mantığı ve altyapı hazırdır. Herhangi bir LLM’e yapıştırarak ne yapmanız gerektiğini hızlıca anlayabilirsiniz.
 
 Olduğu gibi kullanılabilir ancak atak yüzeyi yaklaşık %1.5–3.5 civarındadır. Yine de bir sanal makine içinde Docker’da çalıştırmanızı tavsiye ederim. Herhangi bir sorumluluk kesinlikle kabul etmiyorum.
