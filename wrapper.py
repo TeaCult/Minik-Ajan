@@ -1,247 +1,258 @@
 import os
-import json
-import subprocess
-import time
-import openai
 import re
+import json
+import shlex
+import subprocess
+import openai
+import sys
+import concurrent.futures
+from openai import OpenAI # [MODIFIED] Added to actually invoke the LLM
+import time 
 
-# --- CONFIGURATION ---
-API_KEY="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-MAX_CHARS = 50000
-WORK_DIR = "/agent_workspace"
-SESSION_FILE = f"{WORK_DIR}/session_log.txt"
-STATE_FILE = f"{WORK_DIR}/rolling_memory.json"
-TOOL_SCRIPT = f"{WORK_DIR}/use_tools.py"
-TASK_FILE=f"{WORK_DIR}/task.md"
+API_KEY="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
-with open(TASK_FILE, "r") as f:
-    MAIN_TASK=f.read()
-
-
-INITIAL_STATE = {
-    "executor": {"task_memory": "Starting task.", "next_steps": "Initialize environment."},
-    "auditor": {"status": "Nominal", "critique": "None"},
-    "ideator": {"suggestions": ["Waiting task to progress to ideate"]},
-    "archivist": {"summary": "Session started.", "importance_index": 5}
-}
-
-
+# ==========================================
+# CONFIGURATION
+# ==========================================
 SYSTEM_PROMPT = """
-You are an Agentic System with 4 internal personalities:
-1. Executor: Focuses on task completion.
-2. Auditor: Checks for errors, loops, or logic gaps.
-3. Ideator: Suggests creative shortcuts or missed connections.
-4. Archivist: Manages the 'Rolling Memory' JSON to keep context lean.
+You are an agentic system that thinks acts and observe. 
 
-RESTRICTIONS:
-- Working directory: /agent_workspace  Create work files on this location
-- read/write/mkdir: Paths ONLY under /agent_workspace and its subfolders 
-- Shell command and execute are not available to you and heavily restricted 
-- Shell command WONT WORK! other than {"ls", "grep", "ps", "echo", "cat"} 
-- Shell command [";", "&", "|", ">", "<", "$", "(", ")", "`"] patterns are FORBIDDEN
+IMPORTANT: All tools in the 'tool_calls' array are executed CONCURRENTLY in parallel. 
+web_serach can provide 5 concurrent searches per second at most. 
+Do not schedule dependent actions (like writing a file then reading that exact file) in the same turn. 
+Wait for the next step to do dependent actions.
 
-
-CRITICAL PERFORMANCE RULES:
-1.  DO NOT rewrite a file immediately after reading it unless the user explicitly requested a modification or you are aggregating NEW search results.
-2.  If you read a file and the content looks correct, DO NOT write it back. Move to the next logical step (e.g., perform a web_search).
-3.  Only write a file if you have created NEW data or synthesized a repo
-
-
-Every response MUST be a JSON object with:
+IMPORTANT: You must ONLY output a valid JSON object in the exact following schema:
 {
-  "memory_update": { ... updated 4-personality state ... },
-  "thought": "Internal monologue",
-  "tool_call": "tool_name <arg>arg1</arg> <arg>arg2</arg>" (or null)
+  "thought": "Your thoughts on what to do next",
+  "tool_calls": [
+    {
+      "name": "tool_name_here",
+      "arguments": ["arg1", "arg2"]
+    }
+  ]
 }
+
+web_search and web_fetch tools are very supperior , if you can't get the results sites not responding are paywalled for sure, 
+do not try to circumvent web_search and web_fetch fails via custom python or shell codes.
 
 Available Tools:
-- read <path>: Read file.
-- write <path> <content>: Write file.
-- mkdir <path>: Create dir.
-- web_search <query> <num_results,default=5>: Makes a web search.
-- web_fetch <url> <max_chars>: Fetches an url. 
-- finish: finishes entire session and exits from sandbox environment.
-- stop: force stops execution.
-- exit: force exits sandbox environment. 
+    read <path>: Read file.
+    write <path> <content>: Write file.
+    mkdir <path>: Create dir.
+    web_search <query> <num_results,default=5>: Makes a web search.
+    web_fetch <url> <max_chars>: Fetches an url.
+    finish: finishes entire session and exits from sandbox environment. WILL BE CALLED WHEN TASK IS FINISHED.
+    stop: force stops execution.
+    exit: force exits sandbox environment.
+    timestamp: gets current timestamp,
+    append <path> <content>: append <arg>path</arg> <arg>content</arg>,
+    list <path>: lists the files and folders,
+    edit <path> <old> <new> <occurrence>: edits a specific part of a file instead of read and write
+    http <method> <url> <data> <headers>: runs http requests directly
+    run_shell <script_path>: runs shell script
+    run_python <script_path>: run a python script
+    pip_install <packages>: install a python package
+    shell <bash command> : Runs in bash  # But please prefer to run scripts instead of directly running shell commands
+    apt_install <packages>: Installs system packages
 
-Unavailable Tools: 
-- Shell <arg> : Runs in bash 
-- Execute <arg> : Runs in bash 
-
-YOUR TASK IS: 
+You can install these tools and use them to help you if you need them via apt-get but first update:
+curl wget git jq tree unzip zip dnsutils lsof strace file p7zip-full openssl
 
 
-""" + MAIN_TASK
+YOUR TASK IS:
+{MAIN_TASK}
+
+Create and update task progress at every cycle to TASK_PROGRESS.md as you progress in each cycle.
+
+THERE MAY BE <__INCOMING_MESSAGE_INTERRUPTION__:<content>> between messages, 
+regard them as task redirection and adjust your methods to accomplish the main task or the main task itself. 
+"""
 
 
-TOOL_HANDLER_PROMPT = """
-You are a safe Tool Handler LLM. Handle tool calls ONLY within restrictions:
-- Output: {{"action": "execute|deny", "reason": "...", "safe_cmd": ["python3", "use_tools.py", ...] or null}}
+BASE_URL = "https://api.deepinfra.com/v1/openai"
+#MODEL_NAME = "deepseek-ai/DeepSeek-V3.2"
+#MODEL_NAME = "openai/gpt-oss-120b"
+MODEL_NAME = "moonshotai/Kimi-K2.5"
 
-Tool call: {{tool_call}}
-""".replace("{WORK_DIR}", WORK_DIR)
 
-def print_event(tag, content):
-    print(f"\n--- {tag.upper()} ---")
-    print(json.dumps(json.loads(content) if isinstance(content, str) and content.strip().startswith('[{') else content, indent=2))
-    print("-" * 80)
-    with open(SESSION_FILE, "a") as f:
-        f.write(f"\n--- {tag} ---\n{content}\n")
 
-def safe_execute_tool(t_call):
-    """Delegate to Tool Handler LLM for safe parsing/execution."""
-    messages = [
-        {"role": "system", "content": TOOL_HANDLER_PROMPT.format(WORK_DIR=WORK_DIR)},
-        {"role": "user", "content": f"Tool call: {t_call}"}
-    ]
-    client = openai.OpenAI(api_key=API_KEY, base_url="https://api.deepinfra.com/v1/openai")
+# Constants from context [2]
+WORK_DIR = "/agent_workspace"
+SESSION_FILE = f"{WORK_DIR}/session_log.txt"
+TOOL_SCRIPT = f"{WORK_DIR}/use_tools.py"
+MAX_CHAR_SIZE = 300000 
+MAX_STEPS = 100 # SLICK UPGRADE: Prevent infinite loops
+
+def get_llm_response(client, messages):
     try:
         resp = client.chat.completions.create(
-            model="deepseek-ai/DeepSeek-V3.2",
+            model=MODEL_NAME,
             messages=messages,
             response_format={"type": "json_object"}
         )
-        handler_resp = json.loads(resp.choices[0].message.content)
-        print_event("TOOL_HANDLER", json.dumps(handler_resp))
+        raw = resp.choices[0].message.content
         
-        if handler_resp.get("action") == "execute":
-            cmd = handler_resp["safe_cmd"]
-            result = subprocess.run(cmd, cwd=WORK_DIR, capture_output=True, text=True)
-            return result.stdout + result.stderr
-        else:
-            return f"Denied: {handler_resp.get('reason', 'Unsafe')}"
+        # SLICK UPGRADE: Bulletproof JSON extraction using Regex
+        match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+        return {"error": "No JSON object found in response."}
+        
+    except json.JSONDecodeError as e:
+        return {"error": f"Invalid JSON format: {str(e)}"}
     except Exception as e:
-        return f"Tool Handler Error: {str(e)}"
+        log_event("ERROR", f"LLM Call Failed: {e}")
+        return None
 
-def call_llm(messages):
-    client = openai.OpenAI(api_key=API_KEY, base_url="https://api.deepinfra.com/v1/openai")
-    resp = client.chat.completions.create(
-        model="deepseek-ai/DeepSeek-V3.2",
-        messages=messages,
-        response_format={"type": "json_object"}
-    )
-    return json.loads(resp.choices[0].message.content)
-def parse_tool_call(t_call):
-    """
-    Parses tool calls supporting generic tags like <path>val</path>, <arg>val</arg>, etc.
-    Returns (tool_name, [args_list]) or (None, None) if parsing fails.
-    """
-    # Regex to find the tool name (first word before any tag)
-    match = re.match(r"^\s*(\w+)", t_call)
-    
-    if not match:
-        return None, None
-    
-    tool_name = match.group(1)
-    
-    # Extract content inside ANY XML-style tags (e.g., <path>...</path>, <arg>...</arg>)
-    # This handles <path>, <content>, <arg>, <url>, <query>, etc.
-    arg_matches = re.findall(r"<(\w+)>(.*?)</\1>", t_call, re.DOTALL)
-    
-    # We only return the content (group 2), ignoring the tag name (group 1)
-    args = [match[1].strip() for match in arg_matches]
-    
-    return tool_name, args
+def log_raw_activity(label, content):
+    os.makedirs("raw_activity", exist_ok=True)
+    timestamp = int(time.time() * 1000)
+    filename = f"raw_activity/{timestamp}_{label}.txt"
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(str(content))
 
-def run_agent():
+def log_event(label, content):
+    entry = f"\n[{label}] {content}\n"
+    print(entry)
+    # Ensure directory exists before writing logs
     os.makedirs(WORK_DIR, exist_ok=True)
+    with open(SESSION_FILE, "a") as f:
+        f.write(entry)
+
+def execute_tool_call(tool_name, args):
+    """Executes a single tool via the use_tools.py script [1]."""
+    try:
+        # Cast tool_name into string safely
+        cmd = ["python3", TOOL_SCRIPT, str(tool_name)] + [str(a) for a in args]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        return res.stdout if res.returncode == 0 else f"ERROR: {res.stderr}"
+    except Exception as e:
+        return f"SYSTEM_ERROR: {str(e)}"
+
+# [MODIFIED] Helper function strictly for processing items in the thread pool
+def _process_single_tool(call):
+    name = call.get("name")
+    args = call.get("arguments", [])
     
-    # Load or Initialize State
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
-            state = json.load(f)
-    else:
-        state = INITIAL_STATE
+    # Catch empty/None tool names
+    if not name:
+        return False, f"Tool Error: tool name was missing in standard JSON call. Raw call: {call}"
+        
+    if name in ["finish", "stop", "exit"]:
+        # Returns a tuple of (is_exit_signal, observation_string)
+        return True, f"Signal received: {name}. Exiting."
+    
+    log_raw_activity(f"TOOL_INPUT_{name}", args)
+    result = execute_tool_call(name, args)
+    log_raw_activity(f"TOOL_OUTPUT_{name}", result)
+    return False, f"Tool {name} Result: {result}"
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+def run_agent(task_description):
+    client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
-    client = openai.OpenAI(api_key=os.getenv("API_KEY", API_KEY), base_url="https://api.deepinfra.com/v1/openai")
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT.replace("{MAIN_TASK}",task_description)},
+        {"role": "user", "content": "Begin task."}
+    ]
+    
+    
+    for step in range(MAX_STEPS):
+  
+        # 1. Check if the message bus file exists and has content
+        interrupt_file = "INCOMING_MESSAGE.md"
+        if os.path.exists(interrupt_file) and os.path.getsize(interrupt_file) > 0:
+            try:
+                # 2. Read the content
+                with open(interrupt_file, "r") as f:
+                    interruption_content = f.read().strip()
+                
+                # 3. ZERO OUT the file immediately to prevent duplicate reads
+                with open(interrupt_file, "w") as f:
+                    f.truncate(0) 
 
-    for i in range(50):  # Limit loops
-        # Context Management
-        current_context_len = sum(len(m['content']) for m in messages)
-        if current_context_len > MAX_CHARS:
-            print("Context limit reached. Resetting message history (keeping system prompt)...")
-            messages = [messages[0]] 
+                # 4. Inject into the agent's message loop
+                if interruption_content:
+                    log_event("SYSTEM", f"External Interruption Received: {interruption_content[:50]}...")
+                    messages.append({
+                        "role": "user", 
+                        "content": f"<INCOMING_MESSAGE_INTERRUPTION : {interruption_content} >"
+                    })
+            except Exception as e:
+                log_event("ERROR", f"Failed to read/clear interruption file: {e}")
 
-        user_msg = f"Current Internal State: {json.dumps(state)}\nExecute next step."
-        messages.append({"role": "user", "content": user_msg})
 
-        print_event("LLM_INPUT", json.dumps(messages))
+        log_event("SYSTEM", f"--- Step {step + 1}/{MAX_STEPS} ---")
+        
+        log_raw_activity("LLM_INPUT", messages)
+        response_json = get_llm_response(client, messages) 
+        log_raw_activity("LLM_OUTPUT", response_json)
+        if not response_json: 
+            break
+            
+        # SLICK UPGRADE: If the LLM messed up the JSON, tell it to fix it!
+        if "error" in response_json:
+            error_msg = f"System Error: {response_json['error']}. Please output VALID JSON ONLY containing 'thought' and 'tool_calls'."
+            log_event("OBSERVATION", error_msg)
+            messages.append({"role": "user", "content": error_msg})
+            continue # Try again
+        
+        log_event("THOUGHT", response_json.get("thought", "Acting..."))
+        messages.append({"role": "assistant", "content": json.dumps(response_json)})
 
-        try:
-            resp = client.chat.completions.create(
-                model="deepseek-ai/DeepSeek-V3.2",
-                messages=messages,
-                response_format={"type": "json_object"}
-            )
-            response_data = json.loads(resp.choices[0].message.content)
-        except Exception as e:
-            print(f"LLM Error: {e}")
+        tool_calls = response_json.get("tool_calls", [])
+        observations = []
+        exit_signal = False
+
+        if tool_calls:
+            # SLICK UPGRADE: Cap concurrent workers to prevent OS crashes on massive tool call arrays
+            max_workers = min(len(tool_calls), 10) 
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                results = executor.map(_process_single_tool, tool_calls)
+                
+                for is_exit, obs_str in results:
+                    observations.append(obs_str)
+                    if is_exit:
+                        exit_signal = True
+
+        combined_obs = "\n".join(observations)
+        if combined_obs:  
+            log_event("OBSERVATION", combined_obs)
+            messages.append({"role": "user", "content": combined_obs})
+
+        if exit_signal:
+            log_event("SYSTEM", "Task finalized successfully.")
             break
 
-        print_event("LLM_RESPONSE", json.dumps(response_data))
+        # SLICK UPGRADE: Safe Memory Management
+        current_chars = sum(len(str(m.get("content", ""))) for m in messages)
+        if current_chars > MAX_CHAR_SIZE:
+            log_event("SYSTEM", "Memory warning. Dropping oldest interactions to preserve context...")
+            # Keep System prompt [0], initial task [1], and the 6 most recent messages.
+            # This safely throws away the middle without breaking JSON formatting.
+            
+            
+            summary = [
+            {"role": "user", "content": "Summary: You can look at the TASK_PROGRESS.md in work folder for summary."}
+            ]
+            
+            messages = messages[:2] + summary+ messages[-6:]
 
-        messages.append({"role": "assistant", "content": json.dumps(response_data)})
+    if not exit_signal:
+        log_event("SYSTEM", "Agent stopped: Reached MAX_STEPS limit.")
         
-        if "memory_update" in response_data:
-            state = response_data["memory_update"]
-            with open(STATE_FILE, "w") as f:
-                json.dump(state, f)
-
-        thought = response_data.get("thought", "")
-        t_call = response_data.get("tool_call")
-
-        print(f"Thought: {thought}")
-
-        if t_call and t_call.strip():
-            print_event("TOOL_CALL", t_call)
-            
-            tool_name, args = parse_tool_call(t_call)
-            
-            cmd = []
-            result = ""
-            
-            if tool_name and args is not None:
-                if tool_name in ["read", "mkdir", "web_search", "web_fetch", "shell", "finish", "stop", "exit"]:
-                    cmd = ["python3", TOOL_SCRIPT, tool_name] + args
-                    
-                elif tool_name == "write":
-                    if len(args) >= 2:
-                        cmd = ["python3", TOOL_SCRIPT, tool_name, args[0], args[1]]
-                    else:
-                        result = "Error: Write tool requires 2 arguments (path and content)."
-                
-                else:
-                    result = f"Error: Unknown tool '{tool_name}'"
-            else:
-                result = "Error: Tool call format not recognized. Expected format: tool_name <arg>arg1</arg> ..."
-
-            if cmd:
-                try:
-                    proc_result = subprocess.run(
-                        cmd,
-                        cwd=WORK_DIR,
-                        capture_output=True,
-                        text=True,
-                        timeout=45
-                    )
-                    result = proc_result.stdout + proc_result.stderr
-                    
-                    if tool_name in ["finish", "stop", "exit"]:
-                        print(f"Session ending with signal: {tool_name}")
-                        break
-
-                except subprocess.TimeoutExpired:
-                    result = "Error: Tool execution timed out."
-                except Exception as e:
-                    result = f"Execution failed: {type(e).__name__}: {e}"
-            
-            print_event("TOOL_RESULT", result)
-            messages.append({"role": "system", "content": f"Tool result:\n{result}"})
-
-        else:
-            print("No tool call. Task may be complete or waiting.")
+    return "Agent session ended."
 
 if __name__ == "__main__":
-    run_agent()
+    # Ensure workspace logic stays intact if use_tools.py depends on it
+    os.makedirs(WORK_DIR, exist_ok=True)
+    
+    # Read directly from task.md in the current directory
+    try:
+        with open("task.md", "r") as f:
+            task = f.read()
+    except FileNotFoundError:
+        print("ERROR: 'task.md' not found in the current working directory.")
+        sys.exit(1)
+    run_agent(task)
+
