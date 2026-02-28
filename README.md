@@ -2,7 +2,7 @@
 
 Minik-Ajan, LLM (Büyük Dil Modelleri) ajan kullanımını eğlenerek öğrenmek için yapılmış küçük ve şirin bir örnektir. Hesaplıdır, tutumludur. Bakkaldan sakız alır gibi cent’ler ve kuruşlarla çalışır. MCP vb. protokollerle uğraşmadan, LangChain veya LangGraph gibi araçları öğrenmenin ön yükü olmadan, işlerinizi ve denemelerinizi hızlıca izole edilmiş Docker konteynerlarında test etmeniz için tasarlanmıştır.
 
-[![Watch the demo](https://img.youtube.com/vi/nB36YzwMk_8/0.jpg)](https://youtu.be/nB36YzwMk_8)
+![new3.jpeg](/home/gediz/Desktop/Minik-Ajan/Slip%20messages%20during%20task/new3.jpeg)
 
 --- 
 
@@ -54,8 +54,29 @@ It works with a DeepInfra API key; you can significantly speed it up by changing
 
 Licensed under MIT. Use it, modify it, use it commercially — no problem. Integrate it, fork it, etc.
 
+---
 
+New wrapper-od is in on the way and not yet tested but : 
 
+<img title="" src="file:///home/gediz/.config/marktext/images/2026-02-28-16-23-42-image.png" alt="" width="856" data-align="left">
 
+| Feature / Architecture Metric             | This ONE (Your Wrapper) | SWE-Agent | OpenCLAW | Scientific SOTA |
+|:----------------------------------------- |:-----------------------:|:---------:|:--------:|:---------------:|
+| **ReAct Loop** (Step reasoning cycle)     | ✅                       | ✅         | ✅        | ✅               |
+| **Parallel Tools** (Concurrent execution) | ✅                       | ❗         | ✅        | ✅               |
+| **Memory Compression** (Token mgmt)       | ✅                       | ✅         | ✅        | ✅               |
+| **External Interrupts** (Live steering)   | ✅                       | ❗         | ✅        | ❗               |
+| **Planner / Executor Split**              | ❗                       | ❗         | ✅        | ✅               |
+| **Reflection / Self-Correction Loop**     | ❗                       | ✅         | ✅        | ✅               |
+| **Strict JSON Schema Enforcement**        | ✅                       | ✅         | ✅        | ✅               |
+| **Web Browsing & Fetch Automation**       | ✅                       | ❗         | ✅        | ✅               |
+| **Hard-Capped Max Cycles**                | ✅                       | ✅         | ✅        | ✅               |
+| **Lightweight & Dependency-Free Core**    | ✅                       | ❗         | ❗        | ❗               |
+| **Native Docker / Sandboxing**            | ❗                       | ✅         | ✅        | ❗               |
+| **Graph / Tree-of-Thought Branches**      | ❗                       | ❗         | ❗        | ✅               |
+| **Semantic Vector Database Memory**       | ❗                       | ❗         | ✅        | ✅               |
+| **Automated System Packaging (apt)**      | ✅                       | ✅         | ✅        | ❗               |
+| **Specialized Custom Code Linters**       | ❗                       | ✅         | ✅        | ✅               |
+| **Multi-Agent Orchestration Swarms**      | ❗                       | ❗         | ✅        | ✅               |
 
 
