@@ -2,7 +2,7 @@
 
 Minik-Ajan, LLM (Büyük Dil Modelleri) ajan kullanımını eğlenerek öğrenmek için yapılmış küçük ve şirin bir örnektir. Hesaplıdır, tutumludur. Bakkaldan sakız alır gibi cent’ler ve kuruşlarla çalışır. MCP vb. protokollerle uğraşmadan, LangChain veya LangGraph gibi araçları öğrenmenin ön yükü olmadan, işlerinizi ve denemelerinizi hızlıca izole edilmiş Docker konteynerlarında test etmeniz için tasarlanmıştır.
 
-![new3.jpeg](/home/gediz/Desktop/Minik-Ajan/Slip%20messages%20during%20task/new3.jpeg)
+![new3.jpeg](Slip%20messages%20during%20task/new3.jpeg)
 
 --- 
 
